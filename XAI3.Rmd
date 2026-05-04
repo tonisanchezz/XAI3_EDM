@@ -9,22 +9,56 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r}
+library(randomForest)
+library(pdp)
+library(ggplot2)
+library(gridExtra)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+df <- read.csv("kc_house_data.csv")
+features_all <- c("price", "bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "yr_built")
+df_clean <- na.omit(df[, features_all])
 
-```{r cars}
-summary(cars)
+set.seed(42)
+df_sample <- df_clean[sample(1:nrow(df_clean), 1500), ]
+
+cat("Training Random Forest...\n")
+rf_model <- randomForest(
+  price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + yr_built,
+  data = df_sample,
+  ntree = 100
+)
+
+cat("Generating 1D plots...\n")
+
+crear_grafica_1d <- function(variable) {
+  pd <- partial(rf_model, pred.var = variable, train = df_sample)
+  
+  p <- autoplot(pd, rug = TRUE, train = df_sample) +
+    geom_line(color = "blue", size = 1) +           # Línea azul
+    ggtitle("Partial dependence plot") +            # Título superior
+    ylab("Predicted price") +                       # Nombre eje Y
+    theme_gray()                                    # Fondo gris estándar
+  
+  return(p)
+}
+
+p_bed   <- crear_grafica_1d("bedrooms")
+p_bath  <- crear_grafica_1d("bathrooms")
+p_sqft  <- crear_grafica_1d("sqft_living")
+p_floor <- crear_grafica_1d("floors")
+
+grid.arrange(p_bed, p_bath, p_sqft, p_floor, ncol = 2)
+
+cat("Generating 2D heatmaps...\n")
+
+pd_2d_1 <- partial(rf_model, pred.var = c("sqft_living", "bathrooms"), train = df_sample)
+mapa_1 <- plotPartial(pd_2d_1, levelplot = TRUE, zlab = "Precio", main = "Heatmap: Sqft vs Bathrooms")
+
+pd_2d_2 <- partial(rf_model, pred.var = c("sqft_living", "bedrooms"), train = df_sample)
+mapa_2 <- plotPartial(pd_2d_2, levelplot = TRUE, zlab = "Precio", main = "Heatmap: Sqft vs Bedrooms")
+
+print(mapa_1)
+print(mapa_2)
 ```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
