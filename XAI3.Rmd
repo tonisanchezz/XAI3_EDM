@@ -1,64 +1,172 @@
 ---
 title: "XAI3"
-author: "Toni"
+author: "Chenyao Lin, Antonio Sánchez Guillén"
 date: "`r Sys.Date()`"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r}
+library(randomForest)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(gridExtra)
+```
+
+```{r}
+bike_raw_data <- read.csv("day.csv")
+
+bike_data <- bike_raw_data %>%
+  mutate(
+    date_dt = ymd(dteday),
+    days_since_2011 = as.numeric(date_dt - ymd("2011-01-01")),
+    temp = temp * (39 - (-8)) + (-8),
+    hum = hum * 100,
+    windspeed = windspeed * 67
+  ) %>%
+  select(cnt, temp, hum, windspeed, days_since_2011)
 ```
 
 
 ```{r}
-library(randomForest)
-library(pdp)
-library(ggplot2)
-library(gridExtra)
+SEED = 42
+set.seed(SEED)
+rf_bike <- randomForest(cnt ~ ., data = bike_data, ntree = 500, importance = TRUE)
 
+compute_pdp <- function(model, train_data, feature, grid_resolution = 50) {
+  feature_vals <- seq(min(train_data[[feature]]),
+                      max(train_data[[feature]]),
+                      length.out = grid_resolution)
+
+  pd_vals <- sapply(feature_vals, function(val) {
+    tmp <- train_data
+    tmp[[feature]] <- val
+    mean(predict(model, newdata = tmp))
+  })
+
+  data.frame(x = feature_vals, yhat = pd_vals)
+}
+
+pd_days <- compute_pdp(rf_bike, bike_data, "days_since_2011")
+pd_temp <- compute_pdp(rf_bike, bike_data, "temp")
+pd_hum  <- compute_pdp(rf_bike, bike_data, "hum")
+pd_wind <- compute_pdp(rf_bike, bike_data, "windspeed")
+
+make_rug <- function(data_col) {
+  data.frame(x = data_col, y = 0)
+}
+
+plot_1d <- function(pd_data, rug_data, xlab, ylab = "Predicted number of bike rentals") {
+  ggplot(pd_data, aes(x = x, y = yhat)) +
+    geom_line(linewidth = 0.8) +
+    geom_rug(data = rug_data, aes(x = x, y = y),
+             sides = "b", alpha = 0.4, length = unit(0.03, "npc")) +
+    labs(x = xlab, y = ylab) +
+    scale_y_continuous(limits = c(0, NA)) +
+    theme_bw(base_size = 11) +
+    theme(panel.grid.minor = element_blank())
+}
+
+plot_1d(pd_days, make_rug(bike_data$days_since_2011), "Days since 2011")
+plot_1d(pd_temp, make_rug(bike_data$temp),            "Temperature (°C)")
+plot_1d(pd_hum,  make_rug(bike_data$hum),             "Humidity (%)")
+plot_1d(pd_wind, make_rug(bike_data$windspeed),       "Wind speed (km/h)")
+```
+
+```{r}
+plot_2d_pdp <- function(model, data, var_x, var_y, grid_n=20,
+                        x_label, y_label, title, legend_label) {
+  x_grid <- seq(min(data[[var_x]]), max(data[[var_x]]), length.out = grid_n)
+  y_grid <- seq(min(data[[var_y]]), max(data[[var_y]]), length.out = grid_n)
+  grid   <- expand.grid(x = x_grid, y = y_grid)
+  colnames(grid) <- c(var_x, var_y)
+
+  grid$yhat <- mapply(function(xv, yv) {
+    tmp          <- data
+    tmp[[var_x]] <- xv
+    tmp[[var_y]] <- yv
+    mean(predict(model, newdata = tmp))
+  }, grid[[var_x]], grid[[var_y]])
+
+  tile_w <- diff(range(x_grid)) / (grid_n - 1) * 1.05
+  tile_h <- diff(range(y_grid)) / (grid_n - 1) * 1.05
+
+  ggplot(grid, aes(x = .data[[var_x]], y = .data[[var_y]], fill = yhat)) +
+    geom_tile(width = tile_w, height = tile_h) +
+    geom_rug(data = data, aes(x = .data[[var_x]], y = NULL),
+             sides = "b", alpha = 0.3, inherit.aes = FALSE,
+             color = "black", length = unit(0.03, "npc")) +
+    geom_rug(data = data, aes(y = .data[[var_y]], x = NULL),
+             sides = "l", alpha = 0.3, inherit.aes = FALSE,
+             color = "black", length = unit(0.03, "npc")) +
+    scale_fill_gradient(name = legend_label) +
+    labs(title = title, x = x_label, y = y_label) +
+    theme_bw(base_size = 12) +
+    theme(panel.grid = element_blank(), legend.position = "right")
+}
+
+set.seed(SEED)
+bike_sample <- bike_data[sample(nrow(bike_data), 100), ]
+
+plot_2d_pdp(
+  model        = rf_bike,
+  data         = bike_sample,
+  var_x        = "temp",
+  var_y        = "hum",
+  x_label      = "Temperature (°C)",
+  y_label      = "Humidity (%)",
+  title        = "2D Partial Dependence Plot: Temperature x Humidity",
+  legend_label = "Predicted\nbike rentals"
+)
+```
+
+```{r}
 df <- read.csv("kc_house_data.csv")
 features_all <- c("price", "bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "yr_built")
 df_clean <- na.omit(df[, features_all])
 
-set.seed(42)
+set.seed(SEED)
 df_sample <- df_clean[sample(1:nrow(df_clean), 1500), ]
 
-cat("Training Random Forest...\n")
-rf_model <- randomForest(
+rf_house <- randomForest(
   price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + yr_built,
-  data = df_sample,
+  data  = df_sample,
   ntree = 100
 )
 
-cat("Generating 1D plots...\n")
+pd_bed   <- compute_pdp(rf_house, df_sample, "bedrooms")
+pd_bath  <- compute_pdp(rf_house, df_sample, "bathrooms")
+pd_sqft  <- compute_pdp(rf_house, df_sample, "sqft_living")
+pd_floor <- compute_pdp(rf_house, df_sample, "floors")
 
-crear_grafica_1d <- function(variable) {
-  pd <- partial(rf_model, pred.var = variable, train = df_sample)
-  
-  p <- autoplot(pd, rug = TRUE, train = df_sample) +
-    geom_line(color = "blue", size = 1) +           # Línea azul
-    ggtitle("Partial dependence plot") +            # Título superior
-    ylab("Predicted price") +                       # Nombre eje Y
-    theme_gray()                                    # Fondo gris estándar
-  
-  return(p)
-}
-
-p_bed   <- crear_grafica_1d("bedrooms")
-p_bath  <- crear_grafica_1d("bathrooms")
-p_sqft  <- crear_grafica_1d("sqft_living")
-p_floor <- crear_grafica_1d("floors")
+p_bed   <- plot_1d(pd_bed,   make_rug(df_sample$bedrooms),    "Bedrooms",          "Predicted price")
+p_bath  <- plot_1d(pd_bath,  make_rug(df_sample$bathrooms),   "Bathrooms",         "Predicted price")
+p_sqft  <- plot_1d(pd_sqft,  make_rug(df_sample$sqft_living), "Living area (sqft)","Predicted price")
+p_floor <- plot_1d(pd_floor, make_rug(df_sample$floors),      "Floors",            "Predicted price")
 
 grid.arrange(p_bed, p_bath, p_sqft, p_floor, ncol = 2)
 
-cat("Generating 2D heatmaps...\n")
 
-pd_2d_1 <- partial(rf_model, pred.var = c("sqft_living", "bathrooms"), train = df_sample)
-mapa_1 <- plotPartial(pd_2d_1, levelplot = TRUE, zlab = "Precio", main = "Heatmap: Sqft vs Bathrooms")
+plot_2d_pdp(
+  model        = rf_house,
+  data         = df_sample,
+  var_x        = "sqft_living",
+  var_y        = "bathrooms",
+  x_label      = "Living area (sqft)",
+  y_label      = "Bathrooms",
+  title        = "2D PDP: sqft_living x bathrooms",
+  legend_label = "Predicted\nprice"
+)
 
-pd_2d_2 <- partial(rf_model, pred.var = c("sqft_living", "bedrooms"), train = df_sample)
-mapa_2 <- plotPartial(pd_2d_2, levelplot = TRUE, zlab = "Precio", main = "Heatmap: Sqft vs Bedrooms")
-
-print(mapa_1)
-print(mapa_2)
+plot_2d_pdp(
+  model        = rf_house,
+  data         = df_sample,
+  var_x        = "sqft_living",
+  var_y        = "bedrooms",
+  x_label      = "Living area (sqft)",
+  y_label      = "Bedrooms",
+  title        = "2D PDP: sqft_living x bedrooms",
+  legend_label = "Predicted\nprice"
+)
 ```
+
